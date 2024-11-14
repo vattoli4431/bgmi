@@ -1,51 +1,44 @@
-name: Run bgmi Workflow
+name: Keep Codespaces Running
 
 on:
-  push:
-    branches:
-      - main
   schedule:
-    - cron: '0 * * * *'  # Runs at the top of every hour
+    - cron: '* * * * *'  # Runs every minute
+  workflow_dispatch:  # Allows manual triggering
 
 jobs:
-  run_bgmi_workflow:
-    runs-on: ubuntu-22.04
+  maintain_codespaces:
+    runs-on: ubuntu-latest
 
     steps:
-      - name: Check out the code
-        uses: actions/checkout@v2
-
-      - name: Cache Python dependencies
-        uses: actions/cache@v3
-        with:
-          path: ~/.cache/pip
-          key: ${{ runner.os }}-python-${{ hashFiles('**/requirements.txt') }}
-          restore-keys: |
-            ${{ runner.os }}-python-
-
-      - name: Set up  binaries
+      - name: Install GitHub CLI and jq
         run: |
-          chmod +x *
-          chmod +x bgmi
-          
-      - name: Set up Python
-        uses: actions/setup-python@v3
-        with:
-          python-version: '3.x'
+          sudo apt-get update
+          sudo apt-get install -y gh jq
 
-      - name: Install required packages
+      - name: Authenticate GitHub CLI with Personal Classic Token
+        env:
+          PERSONAL_CLASSIC_TOKEN: ${{ secrets.PERSONAL_CLASSIC_TOKEN }}  # Reference your secret
+        run: echo "$PERSONAL_CLASSIC_TOKEN" | gh auth login --with-token
+
+      - name: Check and Restart All Codespaces
         run: |
-          pip install pymongo python-telegram-bot pyTelegramBotAPI certifi pymongo aiohttp psutil
+          # Get the list of all Codespaces and their states
+          CODESPACES=$(gh codespace list --json name,state | jq -c '.[]')
 
-      - name: Run bgmi.py
-        run: python3 bgmi.py
+          # Iterate through each Codespace
+          echo "$CODESPACES" | while IFS= read -r codespace; do
+            NAME=$(echo "$codespace" | jq -r '.name')
+            STATUS=$(echo "$codespace" | jq -r '.state')
 
-      - name: Run Tests
-        run: |
-          pytest tests/
+            echo "Codespace: $NAME, Status: $STATUS"
 
-      - name: Upload artifact
-        uses: actions/upload-artifact@v3
-        with:
-          name: bgmi-artifacts
-          path: path/to/generated/files
+            if [ "$STATUS" == "Shutdown" ]; then
+              echo "Codespace $NAME is offline. Starting it..."
+              gh codespace ssh -c "$NAME" --exit-on-disconnect &
+            else
+              echo "Codespace $NAME is already running."
+            fi
+          done
+
+          # Wait for all background processes to complete
+          wait
